@@ -1,0 +1,6 @@
+*.json
+*.lock
+*.test
+node_modules
+.serverless
+.env

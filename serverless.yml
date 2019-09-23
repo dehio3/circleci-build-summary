@@ -1,0 +1,138 @@
+# https://serverless.com/framework/docs/providers/aws/guide/serverless.yml/
+service:
+  name: circleci-build-summary
+provider:
+  name: aws
+  runtime: python3.7
+  memorySize: 128
+  timeout: 300
+  stage: ${opt:stage, self:custom.defaultStage}
+  region: ${opt:region, self:custom.defaultRegion}
+  environment:
+    DYNAMODB_ENDPOINT: ${opt:region, self:provider.region}
+    DYNANODB_TABLE_NAME: ${self:resources.Resources.DynamoDbTable.Properties.TableName}
+  iamRoleStatements:
+    - Effect: "Allow"
+      Action:
+        - "ssm:Get*"
+      Resource: "*"
+    - Effect: Allow
+      Action:
+        - dynamodb:Query
+        - dynamodb:Scan
+        - dynamodb:GetItem
+        - dynamodb:PutItem
+        - dynamodb:UpdateItem
+        - dynamodb:DeleteItem
+      Resource:
+        - "arn:aws:dynamodb:${opt:region, self:provider.region}:*:table/${self:resources.Resources.DynamoDbTable.Properties.TableName}"
+        - "arn:aws:dynamodb:${opt:region, self:provider.region}:*:table/${self:resources.Resources.DynamoDbTable.Properties.TableName}/*"
+    - Effect: Allow
+      Action:
+        - s3:putObject
+      Resource: "arn:aws:s3:::${self:custom.S3Bucketname}-${self:provider.stage}/*"
+
+functions:
+  circleci-to-dynamodb:
+    handler: circleci-to-dynamodb.main
+    name: circleci-to-dynamodb
+    description: Managed by Serverless Framework
+    environment:
+      CIRCLECI_TOKEN: ${self:custom.CircleciPersonalAccessToken}
+      CIRCLECI_URL: "https://circleci.com"
+      CIRCLECI_GET_BUILD_LIMIT: "100"
+    events:
+      - schedule:
+          name: circleci-to-dynamodb
+          description: Managed by Serverless Framework
+          rate: ${self:custom.circleci-to-dynamodb.schedule}
+          enabled: false
+  dynamodb-to-s3:
+    handler: dynamodb-to-s3.main
+    name: dynamodb-to-s3
+    description: Managed by Serverless Framework
+    environment:
+      GITHUB_ORGANIZATION_NAME: ${self:custom.GithubOrganization}
+      S3_BUCKET_NAME: ${self:resources.Resources.S3Bucket.Properties.BucketName}
+    events:
+      - schedule:
+          name: dynamodb-to-s3
+          description: Managed by Serverless Framework
+          rate: ${self:custom.dynamodb-to-s3.schedule}
+          enabled: false
+
+resources:
+  Resources:
+    S3Bucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.S3Bucketname}-${self:provider.stage}
+    # https://github.com/serverless/examples/blob/master/aws-node-rest-api-with-dynamodb/serverless.yml
+    # https://docs.aws.amazon.com/ja_jp/AWSCloudFormation/latest/UserGuide/aws-resource-dynamodb-table.html#aws-resource-dynamodb-table--examples
+    DynamoDbTable:
+      Type: "AWS::DynamoDB::Table"
+      Properties:
+        TableName: ${self:custom.DynamodbTablename}-${self:provider.stage}
+        AttributeDefinitions:
+          - AttributeName: reponame
+            AttributeType: S
+          - AttributeName: build_num
+            AttributeType: N
+          - AttributeName: username
+            AttributeType: S
+          - AttributeName: queued_at
+            AttributeType: S
+        KeySchema:
+          - AttributeName: reponame
+            KeyType: HASH
+          - AttributeName: build_num
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: "sort_queued_at"
+            KeySchema:
+              - AttributeName: username
+                KeyType: HASH
+              - AttributeName: queued_at
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 5
+              WriteCapacityUnits: 5
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+plugins:
+  - serverless-python-requirements
+  - serverless-plugin-aws-alerts
+  - serverless-pseudo-parameters
+
+custom:
+  defaultRegion: us-east-1
+  defaultStage: dev
+  S3Bucketname: <S3 Bucket Name>
+  DynamodbTablename: <Dynamodb Table Name>
+  CircleciPersonalAccessToken: <CircleCI Personal Access Token>
+  GithubOrganization: <Github Organization Name>
+  circleci-to-dynamodb:
+    schedule: cron(0/30 * * * ? *)
+  dynamodb-to-s3:
+    schedule: cron(50 * * * ? *)
+  pythonRequirements:
+    usePipenv: true
+  # alerts:
+  #   stages: # Optionally - select which stages to deploy alarms to
+  #     - dev
+  #     - pro
+  #   nameTemplate: $[functionName]
+  #   topics:
+  #     alarm:
+  #       topic: arn:aws:sns:#{AWS::Region}:#{AWS::AccountId}:lambda-err-notify-slack
+  #   definitions: # these defaults are merged with your definitions
+  #     functionErrors:
+  #       treatMissingData: notBreaching
+  #       period: 300 # override period
+  #       description: Lambda関数の実行に失敗しました。CloudWatchのログを確認してください。
+  #   alarms:
+  #     - functionErrors
